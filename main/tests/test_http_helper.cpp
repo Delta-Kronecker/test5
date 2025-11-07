@@ -35,72 +35,41 @@ void TestHttpHelper::cleanupTestCase() {
 
 void TestHttpHelper::testDownloadData() {
     HttpHelper httpHelper;
-    QSignalSpy spy(&httpHelper, &HttpHelper::requestFinished);
 
-    // Use a simple HTTP test service
-    QString testUrl = "http://httpbin.org/status/200";
+    // Use the new HttpGet method
+    HttpResponse response = httpHelper.HttpGet("http://httpbin.org/status/200");
 
-    httpHelper.download(testUrl);
-
-    // Wait for signal with timeout
-    QVERIFY(spy.wait(10000));
-
-    // Check signal arguments
-    QVERIFY(spy.count() == 1);
-
-    QList<QVariant> arguments = spy.takeFirst();
-    QString result = arguments.at(0).toString();
-    bool success = arguments.at(1).toBool();
-
-    // Should be successful and have content
-    QVERIFY(success);
-    QVERIFY(!result.isEmpty());
+    // Check response
+    QVERIFY(response.error.isEmpty());  // Should have no error
+    QVERIFY(!response.data.isEmpty());  // Should have some data
 }
 
 void TestHttpHelper::testDownloadError() {
     HttpHelper httpHelper;
-    QSignalSpy spy(&httpHelper, &HttpHelper::requestFinished);
 
     // Use invalid URL
-    QString invalidUrl = "http://invalid-domain-that-does-not-exist-12345.com";
+    HttpResponse response = httpHelper.HttpGet("http://invalid-domain-that-does-not-exist-12345.com");
 
-    httpHelper.download(invalidUrl);
-
-    // Wait for signal with timeout
-    QVERIFY(spy.wait(15000));
-
-    QList<QVariant> arguments = spy.takeFirst();
-    QString result = arguments.at(0).toString();
-    bool success = arguments.at(1).toBool();
-
-    // Should fail
-    QVERIFY(!success);
+    // Should have an error
+    QVERIFY(!response.error.isEmpty());
 }
 
 void TestHttpHelper::testTimeoutHandling() {
     HttpHelper httpHelper;
-    QSignalSpy spy(&httpHelper, &HttpHelper::requestFinished);
 
-    // Use a URL that will timeout
-    QString timeoutUrl = "http://httpbin.org/delay/10";
+    // Use a URL that might timeout
+    HttpResponse response = httpHelper.HttpGet("http://httpbin.org/delay/10");
 
-    // Set a short timeout via environment or modify HttpHelper if needed
-    httpHelper.download(timeoutUrl);
-
-    // Wait for signal (should timeout and return empty)
-    QVERIFY(spy.wait(5000));
-
-    QList<QVariant> arguments = spy.takeFirst();
-    QString result = arguments.at(0).toString();
-    bool success = arguments.at(1).toBool();
-
-    // Should timeout/fail
-    QVERIFY(!success || result.isEmpty());
+    // Should either timeout or return empty/error
+    if (!response.error.isEmpty()) {
+        QVERIFY(response.error.contains("timeout") || response.error.contains("network"));
+    }
+    // Response should be empty or have error
+    QVERIFY(response.data.isEmpty() || !response.error.isEmpty());
 }
 
 void TestHttpHelper::testInvalidUrl() {
     HttpHelper httpHelper;
-    QSignalSpy spy(&httpHelper, &HttpHelper::requestFinished);
 
     // Test with various invalid URLs
     QStringList invalidUrls = {
@@ -111,12 +80,10 @@ void TestHttpHelper::testInvalidUrl() {
     };
 
     for (const QString& invalidUrl : invalidUrls) {
-        spy.clear();
-        httpHelper.download(invalidUrl);
-
-        // Should handle gracefully (may or may not emit signal)
-        // Just verify no crashes occur
-        QTest::qWait(100);
+        // Should handle gracefully without crashing
+        HttpResponse response = httpHelper.HttpGet(invalidUrl);
+        // Just verify it returns some error indication
+        QVERIFY(response.data.isEmpty() || !response.error.isEmpty());
     }
 }
 
@@ -126,13 +93,10 @@ void TestHttpHelper::testNetworkManagerCleanup() {
 
     {
         HttpHelper httpHelper;
-        QSignalSpy spy(&httpHelper, &HttpHelper::requestFinished);
-
         // Trigger a request
-        httpHelper.download("http://httpbin.org/status/200");
-
-        // Wait briefly
-        QTest::qWait(100);
+        HttpResponse response = httpHelper.HttpGet("http://httpbin.org/status/200");
+        // Verify it works
+        QVERIFY(response.error.isEmpty() || !response.data.isEmpty());
     }
 
     // Object should be properly destroyed without leaks
