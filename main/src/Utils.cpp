@@ -10,6 +10,8 @@
 #include <QDateTime>
 #include <QUrl>
 #include <QLoggingCategory>
+#include <random>
+#include <chrono>
 
 Q_LOGGING_CATEGORY(UTILS, "utils")
 
@@ -54,7 +56,7 @@ QString SubStrAfter(const QString &str, const QString &sep) {
     return QString();
 }
 
-QString GetQueryValue(const QUrlQuery &q, const QString &key, const QString &def = "") {
+QString GetQueryValue(const QUrlQuery &q, const QString &key, const QString &def) {
     if (q.hasQueryItem(key)) {
         return q.queryItemValue(key);
     }
@@ -93,7 +95,6 @@ QString Utils::readFileText(const QString& filePath) {
     }
 
     QTextStream stream(&file);
-    stream.setCodec("UTF-8");
     QString content = stream.readAll();
     file.close();
 
@@ -117,7 +118,6 @@ bool Utils::writeFileText(const QString& filePath, const QString& content) {
     }
 
     QTextStream stream(&file);
-    stream.setCodec("UTF-8");
     stream << content;
     file.close();
 
@@ -141,7 +141,6 @@ bool Utils::appendFileText(const QString& filePath, const QString& content) {
     }
 
     QTextStream stream(&file);
-    stream.setCodec("UTF-8");
     stream << content;
     file.close();
 
@@ -333,7 +332,7 @@ QString Utils::removeComments(const QString& text, const QString& commentStart) 
     return result;
 }
 
-QStringList Utils::splitLines(const QString& text, Qt::CaseSensitivity) {
+QStringList Utils::splitLines(const QString& text, Qt::CaseSensitivity caseSensitivity) {
     Q_UNUSED(caseSensitivity)
     return text.split('\n', Qt::SkipEmptyParts);
 }
@@ -412,10 +411,13 @@ QString Utils::getTempPath() {
 }
 
 QString Utils::generateTempFileName(const QString& prefix) {
+    static std::mt19937 generator(std::random_device{}());
+    static std::uniform_int_distribution<int> distribution(0, 9999);
+
     return QString("%1_%2_%3.tmp")
         .arg(prefix)
         .arg(QDateTime::currentMSecsSinceEpoch())
-        .arg(qrand() % 10000);
+        .arg(distribution(generator));
 }
 
 // Error handling
