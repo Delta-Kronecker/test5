@@ -1,311 +1,444 @@
-#include <QCoreApplication>
-#include <QDebug>
-#include <QDir>
-#include <QMap>
-#include <QException>
-#include <QLoggingCategory>
-#include <QStandardPaths>
-#include <QTimer>
-
 #include "Utils.h"
-#include "HttpHelper.h"
-#include "SubParser.h"
-#include "ConfigManager.h"
+#include <QFile>
+#include <QTextStream>
+#include <QDebug>
+#include <QCoreApplication>
+#include <QStandardPaths>
+#include <QDir>
+#include <QRegularExpression>
+#include <QProcess>
+#include <QDateTime>
+#include <QUrl>
+#include <QLoggingCategory>
+#include <random>
+#include <chrono>
 
-// Configure logging categories
-Q_LOGGING_CATEGORY(CONFIG_MAIN, "config.main")
-Q_LOGGING_CATEGORY(CONFIG_ERROR, "config.error")
-Q_LOGGING_CATEGORY(CONFIG_INFO, "config.info")
+Q_LOGGING_CATEGORY(UTILS, "utils")
 
-// Subscription statistics structure
-struct SubStats {
-    QString url;
-    QString fileName;
-    int totalConfigs = 0;
-    int uniqueConfigs = 0;
-    int duplicates = 0;
-    QString status;
-    QString errorMessage;
-    qint64 downloadTime = 0;
-};
+QString Utils::m_lastError;
 
-// Generate unique key for deduplication (protocol + server + port)
-QString GenerateConfigKey(const std::shared_ptr<ProxyBean> &bean) {
-    if (!bean) {
-        return QString();
+// Base64 decoding implementation
+QByteArray DecodeB64IfValid(const QString &input, QByteArray::Base64Options options) {
+    if (input.isEmpty()) {
+        return QByteArray();
     }
-    return QString("%1://%2:%3")
-        .arg(bean->type)
-        .arg(bean->serverAddress)
-        .arg(bean->serverPort);
+
+    // Remove whitespace and validate base64 characters
+    QString cleanInput = input.trimmed();
+    if (cleanInput.isEmpty()) {
+        return QByteArray();
+    }
+
+    // Check for valid base64 characters
+    QRegularExpression base64Regex("^[A-Za-z0-9+/]*={0,2}$");
+    if (!base64Regex.match(cleanInput).hasMatch()) {
+        return QByteArray();
+    }
+
+    QByteArray decoded = QByteArray::fromBase64(cleanInput.toUtf8(), options);
+    return decoded;
 }
 
-// Custom exception class for ConfigCollector
-class ConfigCollectorException : public QException {
-public:
-    explicit ConfigCollectorException(const QString& message) : m_message(message) {}
+// String helper functions
+QString SubStrBefore(const QString &str, const QString &sep) {
+    int index = str.indexOf(sep);
+    if (index >= 0) {
+        return str.left(index);
+    }
+    return str;
+}
 
-    void raise() const override { throw *this; }
-    ConfigCollectorException* clone() const override { return new ConfigCollectorException(*this); }
+QString SubStrAfter(const QString &str, const QString &sep) {
+    int index = str.indexOf(sep);
+    if (index >= 0) {
+        return str.mid(index + sep.length());
+    }
+    return QString();
+}
 
-    QString message() const { return m_message; }
+QString GetQueryValue(const QUrlQuery &q, const QString &key, const QString &def) {
+    if (q.hasQueryItem(key)) {
+        return q.queryItemValue(key);
+    }
+    return def;
+}
 
-private:
-    QString m_message;
-};
+// JSON helper functions
+QJsonObject QString2QJsonObject(const QString &jsonString) {
+    QJsonParseError error;
+    QJsonDocument doc = QJsonDocument::fromJson(jsonString.toUtf8(), &error);
+    if (error.error != QJsonParseError::NoError || doc.isNull() || !doc.isObject()) {
+        return QJsonObject();
+    }
+    return doc.object();
+}
 
-// Enhanced error handling class
-class ErrorHandler {
-public:
-    static void handleFileError(const QString& filePath, const QString& operation) {
-        QString error = QString("File %1 failed for %2: %3")
-            .arg(filePath, operation, QFileInfo(filePath).exists() ? "Permission denied" : "Not found");
-        qCCritical(CONFIG_ERROR) << error;
+QString QJsonObject2QString(const QJsonObject &jsonObject, bool compact) {
+    QJsonDocument doc;
+    doc.setObject(jsonObject);
+    return compact ? doc.toJson(QJsonDocument::Compact) : doc.toJson(QJsonDocument::Indented);
+}
+
+// Enhanced file operations
+QString Utils::readFileText(const QString& filePath) {
+    clearError();
+
+    QFile file(filePath);
+    if (!file.exists()) {
+        setLastError(QString("File does not exist: %1").arg(filePath));
+        return QString();
     }
 
-    static void handleNetworkError(const QString& url, const QString& error) {
-        QString detailedError = QString("Network error for %1: %2")
-            .arg(url, error);
-        qCCritical(CONFIG_ERROR) << detailedError;
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        setLastError(QString("Cannot open file for reading: %1 - %2").arg(filePath, file.errorString()));
+        return QString();
     }
 
-    static void handleParsingError(const QString& content, const QString& error) {
-        QString detailedError = QString("Parsing failed: %1")
-            .arg(error);
-        qCCritical(CONFIG_ERROR) << detailedError;
-    }
-};
+    QTextStream stream(&file);
+    QString content = stream.readAll();
+    file.close();
 
-// Configuration validator
-bool validatePaths() {
-    auto& configMgr = ConfigManager::getInstance();
+    qCDebug(UTILS) << "Successfully read file:" << filePath << "Size:" << content.size() << "bytes";
+    return content;
+}
 
-    // Ensure required directories exist
-    if (!configMgr.ensureDirectoryExists(configMgr.getDataDirectory())) {
-        qCCritical(CONFIG_ERROR) << "Failed to create data directory:" << configMgr.getDataDirectory();
+bool Utils::writeFileText(const QString& filePath, const QString& content) {
+    clearError();
+
+    // Ensure directory exists
+    if (!ensureDirectoryExists(QFileInfo(filePath).absolutePath())) {
+        setLastError(QString("Cannot create directory for file: %1").arg(filePath));
         return false;
     }
 
-    if (!configMgr.ensureDirectoryExists(configMgr.getConfigOutputDirectory())) {
-        qCCritical(CONFIG_ERROR) << "Failed to create config output directory:" << configMgr.getConfigOutputDirectory();
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        setLastError(QString("Cannot open file for writing: %1 - %2").arg(filePath, file.errorString()));
         return false;
     }
 
+    QTextStream stream(&file);
+    stream << content;
+    file.close();
+
+    qCDebug(UTILS) << "Successfully wrote file:" << filePath << "Size:" << content.size() << "bytes";
     return true;
 }
 
-// Enhanced subscription processing
-bool processSubscription(const QString& subUrl, SubStats& stats) {
-    try {
-        stats.url = subUrl;
-        stats.status = "Processing";
+bool Utils::appendFileText(const QString& filePath, const QString& content) {
+    clearError();
 
-        qCInfo(CONFIG_INFO) << "Processing subscription:" << subUrl;
+    // Ensure directory exists
+    if (!ensureDirectoryExists(QFileInfo(filePath).absolutePath())) {
+        setLastError(QString("Cannot create directory for file: %1").arg(filePath));
+        return false;
+    }
 
-        // Download content with timeout and error handling
-        HttpHelper httpHelper;
-        QString content;
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+        setLastError(QString("Cannot open file for appending: %1 - %2").arg(filePath, file.errorString()));
+        return false;
+    }
 
-        QTimer timer;
-        timer.setSingleShot(true);
-        QEventLoop loop;
+    QTextStream stream(&file);
+    stream << content;
+    file.close();
 
-        QObject::connect(&timer, &QTimer::timeout, [&]() {
-            loop.quit();
-        });
+    qCDebug(UTILS) << "Successfully appended to file:" << filePath << "Size:" << content.size() << "bytes";
+    return true;
+}
 
-        QObject::connect(&httpHelper, &HttpHelper::requestFinished, [&](const QString& result, bool success) {
-            content = result;
-            if (success) {
-                loop.quit();
-            } else {
-                loop.quit();
-            }
-        });
+QStringList Utils::readFileLines(const QString& filePath) {
+    QString content = readFileText(filePath);
+    if (content.isEmpty()) {
+        return QStringList();
+    }
+    return content.split('\n', Qt::SkipEmptyParts);
+}
 
-        timer.start(ConfigManager::getInstance().getConfig().requestTimeout);
-        httpHelper.download(subUrl);
-        loop.exec();
+bool Utils::writeFileLines(const QString& filePath, const QStringList& lines) {
+    QString content = lines.join('\n');
+    return writeFileText(filePath, content);
+}
 
-        if (content.isEmpty()) {
-            stats.status = "Failed";
-            stats.errorMessage = "Empty content or download timeout";
-            qCCritical(CONFIG_ERROR) << "Failed to download content from:" << subUrl;
-            return false;
-        }
+bool Utils::readFile(const QString& filePath, QByteArray& data) {
+    clearError();
 
-        stats.downloadTime = QDateTime::currentMSecsSinceEpoch();
+    QFile file(filePath);
+    if (!file.exists()) {
+        setLastError(QString("File does not exist: %1").arg(filePath));
+        return false;
+    }
 
-        // Parse content
-        SubParser parser;
-        auto beans = parser.parse(subUrl, content);
+    if (!file.open(QIODevice::ReadOnly)) {
+        setLastError(QString("Cannot open file for reading: %1 - %2").arg(filePath, file.errorString()));
+        return false;
+    }
 
-        if (beans.isEmpty()) {
-            stats.status = "No configs";
-            stats.errorMessage = "No valid proxy configurations found";
-            qCWarning(CONFIG_INFO) << "No valid configs found in:" << subUrl;
-            return true;
-        }
+    data = file.readAll();
+    file.close();
 
-        stats.totalConfigs = beans.size();
+    qCDebug(UTILS) << "Successfully read binary file:" << filePath << "Size:" << data.size() << "bytes";
+    return true;
+}
 
-        // Return processed stats
+bool Utils::writeFile(const QString& filePath, const QByteArray& data) {
+    clearError();
+
+    // Ensure directory exists
+    if (!ensureDirectoryExists(QFileInfo(filePath).absolutePath())) {
+        setLastError(QString("Cannot create directory for file: %1").arg(filePath));
+        return false;
+    }
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly)) {
+        setLastError(QString("Cannot open file for writing: %1 - %2").arg(filePath, file.errorString()));
+        return false;
+    }
+
+    qint64 written = file.write(data);
+    file.close();
+
+    if (written != data.size()) {
+        setLastError(QString("Incomplete write to file: %1").arg(filePath));
+        return false;
+    }
+
+    qCDebug(UTILS) << "Successfully wrote binary file:" << filePath << "Size:" << data.size() << "bytes";
+    return true;
+}
+
+// File system utilities
+bool Utils::ensureDirectoryExists(const QString& path) {
+    clearError();
+
+    QDir dir(path);
+    if (dir.exists()) {
         return true;
+    }
 
-    } catch (const ConfigCollectorException& e) {
-        stats.status = "Error";
-        stats.errorMessage = e.message();
-        qCCritical(CONFIG_ERROR) << "ConfigCollector exception for" << subUrl << ":" << e.message();
+    if (!dir.mkpath(".")) {
+        setLastError(QString("Cannot create directory: %1").arg(path));
         return false;
-    } catch (const std::exception& e) {
-        stats.status = "Error";
-        stats.errorMessage = QString("Standard exception: %1").arg(e.what());
-        qCCritical(CONFIG_ERROR) << "Standard exception for" << subUrl << ":" << e.what();
+    }
+
+    qCDebug(UTILS) << "Created directory:" << path;
+    return true;
+}
+
+bool Utils::copyFile(const QString& source, const QString& destination) {
+    clearError();
+
+    if (!QFile::exists(source)) {
+        setLastError(QString("Source file does not exist: %1").arg(source));
         return false;
-    } catch (...) {
-        stats.status = "Error";
-        stats.errorMessage = "Unknown exception";
-        qCCritical(CONFIG_ERROR) << "Unknown exception for" << subUrl;
+    }
+
+    // Ensure destination directory exists
+    if (!ensureDirectoryExists(QFileInfo(destination).absolutePath())) {
+        setLastError(QString("Cannot create destination directory: %1").arg(destination));
         return false;
+    }
+
+    if (!QFile::copy(source, destination)) {
+        setLastError(QString("Failed to copy file from %1 to %2").arg(source, destination));
+        return false;
+    }
+
+    qCDebug(UTILS) << "Successfully copied file from" << source << "to" << destination;
+    return true;
+}
+
+bool Utils::removeFile(const QString& filePath) {
+    clearError();
+
+    if (!QFile::exists(filePath)) {
+        return true; // File doesn't exist, consider it success
+    }
+
+    if (!QFile::remove(filePath)) {
+        setLastError(QString("Failed to remove file: %1").arg(filePath));
+        return false;
+    }
+
+    qCDebug(UTILS) << "Successfully removed file:" << filePath;
+    return true;
+}
+
+QString Utils::getFileSizeString(const QString& filePath) {
+    qint64 size = getFileSize(filePath);
+    return bytesToString(size);
+}
+
+qint64 Utils::getFileSize(const QString& filePath) {
+    QFileInfo info(filePath);
+    return info.size();
+}
+
+// Path utilities
+QString Utils::getAbsolutePath(const QString& relativePath, const QString& basePath) {
+    QString base = basePath.isEmpty() ? QDir::currentPath() : basePath;
+    return QDir(base).absoluteFilePath(relativePath);
+}
+
+QString Utils::getRelativePath(const QString& absolutePath, const QString& basePath) {
+    QString base = basePath.isEmpty() ? QDir::currentPath() : basePath;
+    return QDir(base).relativeFilePath(absolutePath);
+}
+
+QString Utils::normalizePath(const QString& path) {
+    return QDir::cleanPath(path);
+}
+
+// Validation utilities
+bool Utils::isValidUrl(const QString& url) {
+    QUrl testUrl(url);
+    return testUrl.isValid() && !testUrl.scheme().isEmpty();
+}
+
+bool Utils::isValidEmail(const QString& email) {
+    QRegularExpression emailRegex("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$");
+    return emailRegex.match(email).hasMatch();
+}
+
+bool Utils::isValidPort(int port) {
+    return port >= 1 && port <= 65535;
+}
+
+bool Utils::isValidIpAddress(const QString& ip) {
+    QRegularExpression ipRegex("^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$");
+    return ipRegex.match(ip).hasMatch();
+}
+
+bool Utils::isValidUuid(const QString& uuid) {
+    QRegularExpression uuidRegex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
+    return uuidRegex.match(uuid).hasMatch();
+}
+
+// Text processing utilities
+QString Utils::removeComments(const QString& text, const QString& commentStart) {
+    QString result = text;
+    int commentIndex = result.indexOf(commentStart);
+    while (commentIndex >= 0) {
+        int lineEnd = result.indexOf('\n', commentIndex);
+        if (lineEnd == -1) {
+            result.remove(commentIndex, result.length() - commentIndex);
+        } else {
+            result.remove(commentIndex, lineEnd - commentIndex);
+        }
+        commentIndex = result.indexOf(commentStart, commentIndex);
+    }
+    return result;
+}
+
+QStringList Utils::splitLines(const QString& text, Qt::CaseSensitivity caseSensitivity) {
+    Q_UNUSED(caseSensitivity)
+    return text.split('\n', Qt::SkipEmptyParts);
+}
+
+QString Utils::cleanString(const QString& input) {
+    return input.trimmed().simplified();
+}
+
+bool Utils::containsValidConfig(const QString& content) {
+    return content.contains("vmess://") || content.contains("ss://") ||
+           content.contains("vless://") || content.contains("trojan://");
+}
+
+// Data conversion utilities
+QByteArray Utils::stringToByteArray(const QString& str) {
+    return str.toUtf8();
+}
+
+QString Utils::byteArrayToString(const QByteArray& data) {
+    return QString::fromUtf8(data);
+}
+
+QString Utils::bytesToString(qint64 bytes) {
+    if (bytes < 1024) {
+        return QString("%1 B").arg(bytes);
+    } else if (bytes < 1024 * 1024) {
+        return QString("%1 KB").arg(bytes / 1024.0, 0, 'f', 1);
+    } else if (bytes < 1024 * 1024 * 1024) {
+        return QString("%1 MB").arg(bytes / (1024.0 * 1024.0), 0, 'f', 1);
+    } else {
+        return QString("%1 GB").arg(bytes / (1024.0 * 1024.0 * 1024.0), 0, 'f', 1);
     }
 }
 
-int main(int argc, char *argv[]) {
-    QCoreApplication app(argc, argv);
+// URL and encoding utilities
+QString Utils::urlDecode(const QString& url) {
+    return QUrl::fromPercentEncoding(url.toUtf8());
+}
 
-    // Set application properties
-    app.setApplicationName("ConfigCollector");
-    app.setApplicationVersion("2.0.0");
-    app.setOrganizationName("C-Xray Project");
+QString Utils::urlEncode(const QString& url) {
+    return QUrl::toPercentEncoding(url);
+}
 
-    // Configure logging
-    QLoggingCategory::setFilterRules(
-        "*.debug=true\n"
-        "config.main.debug=true\n"
-        "config.error.*=true\n"
-        "config.info.*=true\n"
-    );
+QString Utils::percentDecode(const QString& str) {
+    return QUrl::fromPercentEncoding(str.toUtf8());
+}
 
-    try {
-        qCInfo(CONFIG_MAIN) << "=== ConfigCollector Started ===";
-        qCInfo(CONFIG_MAIN) << "Version:" << app.applicationVersion();
-        qCInfo(CONFIG_MAIN) << "Build date:" << __DATE__ << __TIME__;
+QString Utils::percentEncode(const QString& str) {
+    return QUrl::toPercentEncoding(str);
+}
 
-        // Initialize configuration manager
-        auto& configMgr = ConfigManager::getInstance();
-        if (!configMgr.loadConfig()) {
-            qCCritical(CONFIG_ERROR) << "Failed to load configuration";
-            return 1;
-        }
+// Time and date utilities
+QString Utils::getCurrentTimestamp() {
+    return QDateTime::currentDateTime().toString(Qt::ISODate);
+}
 
-        // Validate paths and create directories
-        if (!validatePaths()) {
-            qCCritical(CONFIG_ERROR) << "Path validation failed";
-            return 1;
-        }
+QString Utils::formatFileTime(const QDateTime& dateTime) {
+    return dateTime.toString("yyyy-MM-dd HH:mm:ss");
+}
 
-        // Get subscription file path
-        QString subFilePath = configMgr.getSubFilePath();
-        qCInfo(CONFIG_INFO) << "Reading subscriptions from:" << subFilePath;
+QDateTime Utils::parseTimestamp(const QString& timestamp) {
+    return QDateTime::fromString(timestamp, Qt::ISODate);
+}
 
-        // Read subscription file with error handling
-        QString subContent = Utils::readFileText(subFilePath);
+// Application utilities
+QString Utils::getApplicationDirPath() {
+    return QCoreApplication::applicationDirPath();
+}
 
-        if (subContent.isEmpty()) {
-            // Check if file exists
-            if (!QFile::exists(subFilePath)) {
-                qCCritical(CONFIG_ERROR) << "Subscription file not found:" << subFilePath;
-                qCInfo(CONFIG_INFO) << "Please create the file with subscription URLs (one per line)";
-                return 1;
-            } else {
-                qCCritical(CONFIG_ERROR) << "Subscription file is empty:" << subFilePath;
-                return 1;
-            }
-        }
+QString Utils::getUserDataPath() {
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+}
 
-        // Parse subscription URLs
-        auto subLinks = subContent.split('\n', Qt::SkipEmptyParts);
-        // Remove comments and empty lines
-        subLinks.erase(std::remove_if(subLinks.begin(), subLinks.end(), [](const QString& line) {
-            return line.trimmed().startsWith('#') || line.trimmed().isEmpty();
-        }), subLinks.end());
+QString Utils::getTempPath() {
+    return QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+}
 
-        qCInfo(CONFIG_INFO) << "Found" << subLinks.size() << "valid subscription links";
+QString Utils::generateTempFileName(const QString& prefix) {
+    static std::mt19937 generator(std::random_device{}());
+    static std::uniform_int_distribution<int> distribution(0, 9999);
 
-        if (subLinks.isEmpty()) {
-            qCWarning(CONFIG_INFO) << "No subscription URLs found in file";
-            return 0;
-        }
+    return QString("%1_%2_%3.tmp")
+        .arg(prefix)
+        .arg(QDateTime::currentMSecsSinceEpoch())
+        .arg(distribution(generator));
+}
 
-        // Statistics tracking
-        int totalConfigs = 0;
-        int duplicateCount = 0;
-        int configIndex = 1;
-        QMap<QString, std::shared_ptr<ProxyBean>> uniqueConfigs;
-        QList<SubStats> allStats;
+// Error handling
+QString Utils::getLastError() {
+    return m_lastError;
+}
 
-        // Process each subscription
-        for (const QString& subUrl : subLinks) {
-            SubStats stats;
+void Utils::setLastError(const QString& error) {
+    m_lastError = error;
+    qCCritical(UTILS) << "Utils error:" << error;
+}
 
-            if (processSubscription(subUrl, stats)) {
-                // Add to statistics
-                allStats.append(stats);
-                totalConfigs += stats.totalConfigs;
-            } else {
-                // Still add to statistics for reporting
-                stats.status = "Failed";
-                allStats.append(stats);
-            }
-        }
+bool Utils::hasError() {
+    return !m_lastError.isEmpty();
+}
 
-        // Save results
-        QString outputDir = configMgr.getConfigOutputDirectory();
-        qCInfo(CONFIG_INFO) << "Saving results to:" << outputDir;
+void Utils::clearError() {
+    m_lastError.clear();
+}
 
-        // Save each subscription's results
-        for (const SubStats& stats : allStats) {
-            if (stats.totalConfigs > 0) {
-                QString fileName = QString("config_%1.json").arg(configIndex++, 4, 10, QChar('0'));
-                QString filePath = QDir(outputDir).filePath(fileName);
-
-                // This would need to be implemented to save the actual configs
-                // For now, just create placeholder files
-                Utils::writeFileText(filePath, QString("{\"subscription\": \"%1\", \"configs\": []}").arg(stats.url));
-
-                qCInfo(CONFIG_INFO) << "Saved" << stats.totalConfigs << "configs to" << fileName;
-            }
-        }
-
-        // Print comprehensive statistics
-        qCInfo(CONFIG_MAIN) << "=== Collection Summary ===";
-        qCInfo(CONFIG_MAIN) << "Total subscriptions processed:" << allStats.size();
-        qCInfo(CONFIG_MAIN) << "Total configs found:" << totalConfigs;
-        qCInfo(CONFIG_MAIN) << "Unique configs:" << uniqueConfigs.size();
-        qCInfo(CONFIG_MAIN) << "Duplicates removed:" << duplicateCount;
-
-        // Per-subscription breakdown
-        qCInfo(CONFIG_MAIN) << "=== Per-Subscription Results ===";
-        for (const SubStats& stats : allStats) {
-            qCInfo(CONFIG_MAIN) << QString("URL: %1").arg(stats.url);
-            qCInfo(CONFIG_MAIN) << QString("  Status: %1").arg(stats.status);
-            if (!stats.errorMessage.isEmpty()) {
-                qCInfo(CONFIG_MAIN) << QString("  Error: %1").arg(stats.errorMessage);
-            }
-            qCInfo(CONFIG_MAIN) << QString("  Configs: %1").arg(stats.totalConfigs);
-        }
-
-        qCInfo(CONFIG_MAIN) << "=== ConfigCollector Completed Successfully ===";
-        return 0;
-
-    } catch (const ConfigCollectorException& e) {
-        qCCritical(CONFIG_ERROR) << "ConfigCollector exception:" << e.message();
-        return 1;
-    } catch (const std::exception& e) {
-        qCCritical(CONFIG_ERROR) << "Standard exception:" << e.what();
-        return 1;
-    } catch (...) {
-        qCCritical(CONFIG_ERROR) << "Unknown exception occurred";
-        return 1;
-    }
+// Helper function for URL queries
+QUrlQuery GetQuery(const QUrl &url) {
+    return QUrlQuery(url);
 }
