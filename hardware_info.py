@@ -116,8 +116,8 @@ class CPUInfoCollector:
                 frequency_info['methods_used'].append('psutil')
                 frequency_info['results']['psutil'] = {
                     'current_mhz': freq.current,
-                    'min_mhz': freq.min if freq.min else 'Unknown',
-                    'max_mhz': freq.max if freq.max else 'Unknown'
+                    'min_mhz': freq.min if freq.min and freq.min > 0 else 'Unknown',
+                    'max_mhz': freq.max if freq.max and freq.max > 0 else 'Unknown'
                 }
                 print(f"✅ psutil method: Current={freq.current} MHz, Max={freq.max} MHz")
         except Exception as e:
@@ -311,12 +311,15 @@ class CPUInfoCollector:
         for method in methods_priority:
             if method in results:
                 data = results[method]
-                if best['current_mhz'] is None and 'current_mhz' in data and data['current_mhz']:
-                    best['current_mhz'] = data['current_mhz']
-                if best['max_mhz'] is None and 'max_mhz' in data and data['max_mhz']:
-                    best['max_mhz'] = data['max_mhz']
-                if best['min_mhz'] is None and 'min_mhz' in data and data['min_mhz']:
-                    best['min_mhz'] = data['min_mhz']
+                if best['current_mhz'] is None and 'current_mhz' in data and data['current_mhz'] and data['current_mhz'] != 'Unknown':
+                    if isinstance(data['current_mhz'], (int, float)):
+                        best['current_mhz'] = data['current_mhz']
+                if best['max_mhz'] is None and 'max_mhz' in data and data['max_mhz'] and data['max_mhz'] != 'Unknown':
+                    if isinstance(data['max_mhz'], (int, float)):
+                        best['max_mhz'] = data['max_mhz']
+                if best['min_mhz'] is None and 'min_mhz' in data and data['min_mhz'] and data['min_mhz'] != 'Unknown':
+                    if isinstance(data['min_mhz'], (int, float)):
+                        best['min_mhz'] = data['min_mhz']
         
         return best
     
@@ -449,6 +452,18 @@ class CPUInfoCollector:
         
         return performance
     
+    def _format_frequency(self, mhz_value):
+        """Format frequency value safely"""
+        if mhz_value is None or mhz_value == 'Unknown':
+            return "Unknown"
+        try:
+            if isinstance(mhz_value, (int, float)):
+                return f"{mhz_value} MHz ({mhz_value/1000:.2f} GHz)"
+            else:
+                return str(mhz_value)
+        except:
+            return str(mhz_value)
+    
     def generate_comprehensive_report(self):
         """Generate comprehensive CPU report"""
         report = []
@@ -479,22 +494,16 @@ class CPUInfoCollector:
         report.append(f"  Methods Used: {', '.join(freq['methods_used'])}")
         
         best = freq['best_estimate']
-        if best['current_mhz']:
-            report.append(f"  🎯 Best Current Frequency: {best['current_mhz']} MHz ({best['current_mhz']/1000:.2f} GHz)")
-        if best['max_mhz']:
-            report.append(f"  🎯 Best Max Frequency: {best['max_mhz']} MHz ({best['max_mhz']/1000:.2f} GHz)")
-        if best['min_mhz']:
-            report.append(f"  🎯 Best Min Frequency: {best['min_mhz']} MHz ({best['min_mhz']/1000:.2f} GHz)")
+        report.append(f"  🎯 Best Current Frequency: {self._format_frequency(best['current_mhz'])}")
+        report.append(f"  🎯 Best Max Frequency: {self._format_frequency(best['max_mhz'])}")
+        report.append(f"  🎯 Best Min Frequency: {self._format_frequency(best['min_mhz'])}")
         
         # Show all frequency results
         for method, data in freq['results'].items():
             report.append(f"\n  📋 {method.upper()} Results:")
             for key, value in data.items():
-                if 'mhz' in key and value and value != 'Unknown':
-                    if isinstance(value, (int, float)):
-                        report.append(f"    {key}: {value} MHz ({value/1000:.2f} GHz)")
-                    else:
-                        report.append(f"    {key}: {value}")
+                if 'mhz' in key:
+                    report.append(f"    {key}: {self._format_frequency(value)}")
                 elif key == 'model_name':
                     report.append(f"    {key}: {value}")
         
@@ -557,6 +566,8 @@ def main():
         
     except Exception as e:
         print(f"❌ Error collecting CPU information: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
     
     return 0
