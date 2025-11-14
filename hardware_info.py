@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Script to collect and report hardware information
-Compatible with GitHub Actions runners
+Advanced CPU Information Collector for GitHub Actions
+Uses multiple methods to gather comprehensive CPU details
 """
 
 import platform
@@ -9,221 +9,549 @@ import psutil
 import socket
 import datetime
 import os
-import sys
+import json
+import subprocess
+import re
+import multiprocessing
 
-def get_system_info():
-    """Get basic system information"""
-    info = {}
+class CPUInfoCollector:
+    def __init__(self):
+        self.cpu_info = {}
+        self.timestamp = datetime.datetime.now().isoformat()
     
-    # System information
-    info['Platform'] = platform.platform()
-    info['System'] = platform.system()
-    info['Release'] = platform.release()
-    info['Version'] = platform.version()
-    info['Architecture'] = platform.architecture()[0]
-    info['Processor'] = platform.processor()
+    def collect_all_cpu_info(self):
+        """Collect CPU information using all available methods"""
+        print("🔍 Collecting comprehensive CPU information using multiple methods...")
+        
+        self.cpu_info = {
+            'timestamp': self.timestamp,
+            'basic_info': self.get_basic_cpu_info(),
+            'detailed_info': self.get_detailed_cpu_info(),
+            'frequency_info': self.get_cpu_frequency_all_methods(),
+            'cache_info': self.get_cpu_cache_info(),
+            'architecture_info': self.get_cpu_architecture_info(),
+            'flags_info': self.get_cpu_flags(),
+            'topology_info': self.get_cpu_topology(),
+            'performance_info': self.get_cpu_performance_metrics()
+        }
+        
+        return self.cpu_info
     
-    # Machine information
-    info['Machine'] = platform.machine()
-    info['Hostname'] = socket.gethostname()
-    
-    return info
-
-def get_cpu_info():
-    """Get CPU information"""
-    cpu_info = {}
-    
-    # CPU cores
-    cpu_info['Physical Cores'] = psutil.cpu_count(logical=False)
-    cpu_info['Total Cores'] = psutil.cpu_count(logical=True)
-    
-    # CPU frequencies
-    try:
-        freq = psutil.cpu_freq()
-        cpu_info['Max Frequency'] = f"{freq.max:.2f} MHz" if freq else "N/A"
-        cpu_info['Current Frequency'] = f"{freq.current:.2f} MHz" if freq else "N/A"
-    except:
-        cpu_info['Frequency'] = "N/A"
-    
-    # CPU usage
-    cpu_info['CPU Usage'] = f"{psutil.cpu_percent(interval=1)}%"
-    
-    # CPU stats
-    cpu_stats = psutil.cpu_stats()
-    cpu_info['CPU Context Switches'] = cpu_stats.ctx_switches
-    cpu_info['CPU Interrupts'] = cpu_stats.interrupts
-    
-    return cpu_info
-
-def get_memory_info():
-    """Get memory information"""
-    memory_info = {}
-    
-    # Virtual memory
-    virt_mem = psutil.virtual_memory()
-    memory_info['Total RAM'] = f"{virt_mem.total / (1024**3):.2f} GB"
-    memory_info['Available RAM'] = f"{virt_mem.available / (1024**3):.2f} GB"
-    memory_info['Used RAM'] = f"{virt_mem.used / (1024**3):.2f} GB"
-    memory_info['RAM Usage'] = f"{virt_mem.percent}%"
-    
-    # Swap memory
-    swap_mem = psutil.swap_memory()
-    memory_info['Total Swap'] = f"{swap_mem.total / (1024**3):.2f} GB"
-    memory_info['Used Swap'] = f"{swap_mem.used / (1024**3):.2f} GB"
-    memory_info['Swap Usage'] = f"{swap_mem.percent}%"
-    
-    return memory_info
-
-def get_disk_info():
-    """Get disk information"""
-    disk_info = {}
-    
-    # Disk partitions
-    partitions = psutil.disk_partitions()
-    disk_info['Partitions'] = len(partitions)
-    
-    disk_usage = []
-    for partition in partitions:
+    def get_basic_cpu_info(self):
+        """Get basic CPU information using platform module"""
+        info = {
+            'processor_name': platform.processor(),
+            'architecture': platform.architecture()[0],
+            'machine': platform.machine(),
+            'platform': platform.platform(),
+            'python_compiler': platform.python_compiler()
+        }
+        
+        # Try to get more detailed processor info
         try:
-            usage = psutil.disk_usage(partition.mountpoint)
-            disk_usage.append({
-                'Device': partition.device,
-                'Mountpoint': partition.mountpoint,
-                'File System': partition.fstype,
-                'Total Size': f"{usage.total / (1024**3):.2f} GB",
-                'Used': f"{usage.used / (1024**3):.2f} GB",
-                'Free': f"{usage.free / (1024**3):.2f} GB",
-                'Usage': f"{usage.percent}%"
+            if hasattr(platform, 'uname'):
+                uname = platform.uname()
+                info['system'] = uname.system
+                info['node'] = uname.node
+                info['release'] = uname.release
+                info['version'] = uname.version
+                info['machine'] = uname.machine
+                info['processor'] = uname.processor
+        except:
+            pass
+            
+        return info
+    
+    def get_detailed_cpu_info(self):
+        """Get detailed CPU information using psutil"""
+        info = {
+            'physical_cores': psutil.cpu_count(logical=False),
+            'logical_cores': psutil.cpu_count(logical=True),
+            'cpu_usage_percent': psutil.cpu_percent(interval=1),
+            'cpu_usage_per_core': psutil.cpu_percent(interval=1, percpu=True)
+        }
+        
+        # CPU times
+        try:
+            times = psutil.cpu_times()
+            info.update({
+                'user_time': times.user,
+                'system_time': times.system,
+                'idle_time': times.idle,
+                'nice_time': getattr(times, 'nice', 0),
+                'iowait_time': getattr(times, 'iowait', 0),
+                'irq_time': getattr(times, 'irq', 0),
+                'softirq_time': getattr(times, 'softirq', 0),
+                'steal_time': getattr(times, 'steal', 0),
+                'guest_time': getattr(times, 'guest', 0)
             })
-        except PermissionError:
-            continue
+        except:
+            pass
+        
+        # CPU stats
+        try:
+            stats = psutil.cpu_stats()
+            info.update({
+                'ctx_switches': stats.ctx_switches,
+                'interrupts': stats.interrupts,
+                'soft_interrupts': stats.soft_interrupts,
+                'syscalls': stats.syscalls
+            })
+        except:
+            pass
+            
+        return info
     
-    disk_info['Details'] = disk_usage
-    return disk_info
-
-def get_network_info():
-    """Get network information"""
-    network_info = {}
+    def get_cpu_frequency_all_methods(self):
+        """Get CPU frequency using all available methods"""
+        frequency_info = {
+            'methods_used': [],
+            'results': {}
+        }
+        
+        # Method 1: psutil
+        try:
+            freq = psutil.cpu_freq()
+            if freq:
+                frequency_info['methods_used'].append('psutil')
+                frequency_info['results']['psutil'] = {
+                    'current_mhz': freq.current,
+                    'min_mhz': freq.min if freq.min else 'Unknown',
+                    'max_mhz': freq.max if freq.max else 'Unknown'
+                }
+                print(f"✅ psutil method: Current={freq.current} MHz, Max={freq.max} MHz")
+        except Exception as e:
+            print(f"❌ psutil method failed: {e}")
+        
+        # Method 2: /proc/cpuinfo (Linux)
+        try:
+            proc_info = self._get_cpuinfo_frequency()
+            if proc_info:
+                frequency_info['methods_used'].append('/proc/cpuinfo')
+                frequency_info['results']['proc_cpuinfo'] = proc_info
+                print(f"✅ /proc/cpuinfo method: {proc_info}")
+        except Exception as e:
+            print(f"❌ /proc/cpuinfo method failed: {e}")
+        
+        # Method 3: lscpu command
+        try:
+            lscpu_info = self._get_lscpu_frequency()
+            if lscpu_info:
+                frequency_info['methods_used'].append('lscpu')
+                frequency_info['results']['lscpu'] = lscpu_info
+                print(f"✅ lscpu method: {lscpu_info}")
+        except Exception as e:
+            print(f"❌ lscpu method failed: {e}")
+        
+        # Method 4: cpufreq-info command
+        try:
+            cpufreq_info = self._get_cpufreq_info()
+            if cpufreq_info:
+                frequency_info['methods_used'].append('cpufreq')
+                frequency_info['results']['cpufreq'] = cpufreq_info
+                print(f"✅ cpufreq method: {cpufreq_info}")
+        except Exception as e:
+            print(f"❌ cpufreq method failed: {e}")
+        
+        # Method 5: dmidecode (requires root)
+        try:
+            dmidecode_info = self._get_dmidecode_cpu_info()
+            if dmidecode_info:
+                frequency_info['methods_used'].append('dmidecode')
+                frequency_info['results']['dmidecode'] = dmidecode_info
+                print(f"✅ dmidecode method: {dmidecode_info}")
+        except Exception as e:
+            print(f"❌ dmidecode method failed: {e}")
+        
+        # Method 6: Using multiprocessing
+        try:
+            mp_info = self._get_mp_cpu_info()
+            if mp_info:
+                frequency_info['methods_used'].append('multiprocessing')
+                frequency_info['results']['multiprocessing'] = mp_info
+                print(f"✅ multiprocessing method: {mp_info}")
+        except Exception as e:
+            print(f"❌ multiprocessing method failed: {e")
+        
+        # Determine best available frequency values
+        frequency_info['best_estimate'] = self._get_best_frequency_estimate(frequency_info['results'])
+        
+        return frequency_info
     
-    # Network interfaces
-    net_io = psutil.net_io_counters()
-    network_info['Bytes Sent'] = f"{net_io.bytes_sent / (1024**2):.2f} MB"
-    network_info['Bytes Received'] = f"{net_io.bytes_recv / (1024**2):.2f} MB"
+    def _get_cpuinfo_frequency(self):
+        """Get CPU frequency from /proc/cpuinfo"""
+        try:
+            with open('/proc/cpuinfo', 'r') as f:
+                content = f.read()
+            
+            cpu_info = {}
+            
+            # Look for frequency information
+            freq_match = re.search(r'cpu MHz\s*:\s*([\d.]+)', content)
+            if freq_match:
+                cpu_info['current_mhz'] = float(freq_match.group(1))
+            
+            # Look for model name which might contain frequency
+            model_match = re.search(r'model name\s*:\s*(.+)', content)
+            if model_match:
+                model_name = model_match.group(1)
+                cpu_info['model_name'] = model_name
+                
+                # Try to extract frequency from model name
+                ghz_match = re.search(r'([\d.]+)\s*GHz', model_name, re.IGNORECASE)
+                if ghz_match:
+                    cpu_info['advertised_ghz'] = float(ghz_match.group(1))
+                    cpu_info['advertised_mhz'] = float(ghz_match.group(1)) * 1000
+            
+            return cpu_info if cpu_info else None
+            
+        except Exception as e:
+            return None
     
-    # Network interfaces details
-    interfaces = psutil.net_if_addrs()
-    network_info['Network Interfaces'] = list(interfaces.keys())
+    def _get_lscpu_frequency(self):
+        """Get CPU frequency using lscpu command"""
+        try:
+            result = subprocess.run(['lscpu'], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                lscpu_output = result.stdout
+                cpu_info = {}
+                
+                # Parse CPU max MHz
+                max_match = re.search(r'CPU max MHz:\s*([\d.]+)', lscpu_output)
+                if max_match:
+                    cpu_info['max_mhz'] = float(max_match.group(1))
+                
+                # Parse CPU min MHz
+                min_match = re.search(r'CPU min MHz:\s*([\d.]+)', lscpu_output)
+                if min_match:
+                    cpu_info['min_mhz'] = float(min_match.group(1))
+                
+                # Parse CPU current MHz
+                current_match = re.search(r'CPU MHz:\s*([\d.]+)', lscpu_output)
+                if current_match:
+                    cpu_info['current_mhz'] = float(current_match.group(1))
+                
+                # Parse model name
+                model_match = re.search(r'Model name:\s*(.+)', lscpu_output)
+                if model_match:
+                    cpu_info['model_name'] = model_match.group(1).strip()
+                
+                return cpu_info if cpu_info else None
+        except:
+            return None
     
-    return network_info
-
-def get_github_actions_info():
-    """Get GitHub Actions specific information"""
-    actions_info = {}
+    def _get_cpufreq_info(self):
+        """Get CPU frequency using cpufreq-info"""
+        try:
+            result = subprocess.run(['cpufreq-info'], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                output = result.stdout
+                cpu_info = {}
+                
+                # Parse current frequency
+                current_match = re.search(r'current CPU frequency is ([\d.]+) MHz', output)
+                if current_match:
+                    cpu_info['current_mhz'] = float(current_match.group(1))
+                
+                # Parse policy info
+                policy_match = re.search(r'policy:\s*(\d+) MHz - ([\d.]+) MHz', output)
+                if policy_match:
+                    cpu_info['min_mhz'] = float(policy_match.group(1))
+                    cpu_info['max_mhz'] = float(policy_match.group(2))
+                
+                return cpu_info if cpu_info else None
+        except:
+            return None
     
-    # Environment variables specific to GitHub Actions
-    env_vars = [
-        'GITHUB_ACTIONS',
-        'GITHUB_RUN_ID',
-        'GITHUB_RUN_NUMBER',
-        'GITHUB_WORKFLOW',
-        'GITHUB_ACTION',
-        'GITHUB_ACTOR',
-        'GITHUB_REPOSITORY',
-        'GITHUB_EVENT_NAME',
-        'RUNNER_OS',
-        'RUNNER_NAME'
-    ]
+    def _get_dmidecode_cpu_info(self):
+        """Get CPU information using dmidecode (requires root)"""
+        try:
+            result = subprocess.run(['sudo', 'dmidecode', '-t', 'processor'], 
+                                  capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                output = result.stdout
+                cpu_info = {}
+                
+                # Parse max speed
+                max_match = re.search(r'Max Speed:\s*([\d.]+) MHz', output)
+                if max_match:
+                    cpu_info['max_mhz'] = float(max_match.group(1))
+                
+                # Parse current speed
+                current_match = re.search(r'Current Speed:\s*([\d.]+) MHz', output)
+                if current_match:
+                    cpu_info['current_mhz'] = float(current_match.group(1))
+                
+                return cpu_info if cpu_info else None
+        except:
+            return None
     
-    for var in env_vars:
-        actions_info[var] = os.getenv(var, 'Not set')
+    def _get_mp_cpu_info(self):
+        """Get CPU information using multiprocessing"""
+        try:
+            cpu_info = {
+                'cpu_count': multiprocessing.cpu_count()
+            }
+            return cpu_info
+        except:
+            return None
     
-    return actions_info
-
-def generate_report():
-    """Generate comprehensive hardware report"""
-    report = []
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    def _get_best_frequency_estimate(self, results):
+        """Determine the best frequency estimate from all methods"""
+        best = {'current_mhz': None, 'max_mhz': None, 'min_mhz': None}
+        
+        # Priority order of methods
+        methods_priority = ['lscpu', 'cpufreq', 'psutil', 'proc_cpuinfo', 'dmidecode']
+        
+        for method in methods_priority:
+            if method in results:
+                data = results[method]
+                if best['current_mhz'] is None and 'current_mhz' in data:
+                    best['current_mhz'] = data['current_mhz']
+                if best['max_mhz'] is None and 'max_mhz' in data:
+                    best['max_mhz'] = data['max_mhz']
+                if best['min_mhz'] is None and 'min_mhz' in data:
+                    best['min_mhz'] = data['min_mhz']
+        
+        return best
     
-    report.append("=" * 60)
-    report.append(f"HARDWARE INFORMATION REPORT")
-    report.append(f"Generated at: {timestamp}")
-    report.append("=" * 60)
+    def get_cpu_cache_info(self):
+        """Get CPU cache information"""
+        cache_info = {}
+        
+        try:
+            # Try to get cache info from /sys/devices/system/cpu/
+            cpu0_path = '/sys/devices/system/cpu/cpu0/cache/'
+            if os.path.exists(cpu0_path):
+                cache_dirs = [d for d in os.listdir(cpu0_path) if d.startswith('index')]
+                cache_info['cache_levels'] = len(cache_dirs)
+                
+                for cache_dir in cache_dirs:
+                    cache_path = os.path.join(cpu0_path, cache_dir)
+                    try:
+                        with open(os.path.join(cache_path, 'level'), 'r') as f:
+                            level = f.read().strip()
+                        with open(os.path.join(cache_path, 'type'), 'r') as f:
+                            cache_type = f.read().strip()
+                        with open(os.path.join(cache_path, 'size'), 'r') as f:
+                            size = f.read().strip()
+                        
+                        cache_info[f'level_{level}_{cache_type}'] = size
+                    except:
+                        pass
+        except:
+            pass
+        
+        return cache_info
     
-    # System Information
-    report.append("\nSYSTEM INFORMATION:")
-    report.append("-" * 40)
-    system_info = get_system_info()
-    for key, value in system_info.items():
-        report.append(f"{key}: {value}")
+    def get_cpu_flags(self):
+        """Get CPU flags and features"""
+        flags_info = {}
+        
+        try:
+            with open('/proc/cpuinfo', 'r') as f:
+                content = f.read()
+            
+            flags_match = re.search(r'flags\s*:\s*(.+)', content)
+            if flags_match:
+                flags = flags_match.group(1).split()
+                flags_info['flags_count'] = len(flags)
+                flags_info['flags'] = flags
+                
+                # Check for important features
+                important_flags = ['avx', 'avx2', 'sse', 'sse2', 'sse3', 'sse4', 
+                                 'aes', 'vmx', 'svm', 'hypervisor', 'tsc']
+                flags_info['important_features'] = [flag for flag in important_flags if flag in flags]
+        except:
+            pass
+        
+        return flags_info
     
-    # CPU Information
-    report.append("\nCPU INFORMATION:")
-    report.append("-" * 40)
-    cpu_info = get_cpu_info()
-    for key, value in cpu_info.items():
-        report.append(f"{key}: {value}")
+    def get_cpu_topology(self):
+        """Get CPU topology information"""
+        topology = {}
+        
+        try:
+            result = subprocess.run(['lscpu', '-p'], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                topology['lscpu_topology'] = result.stdout.split('\n')[:10]  # First 10 lines
+        except:
+            pass
+        
+        # Get NUMA info if available
+        try:
+            result = subprocess.run(['numactl', '--hardware'], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                topology['numa_info'] = result.stdout
+        except:
+            pass
+        
+        return topology
     
-    # Memory Information
-    report.append("\nMEMORY INFORMATION:")
-    report.append("-" * 40)
-    memory_info = get_memory_info()
-    for key, value in memory_info.items():
-        report.append(f"{key}: {value}")
+    def get_cpu_architecture_info(self):
+        """Get CPU architecture specific information"""
+        arch_info = {}
+        
+        try:
+            result = subprocess.run(['lscpu'], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    if ':' in line:
+                        key, value = line.split(':', 1)
+                        arch_info[key.strip()] = value.strip()
+        except:
+            pass
+        
+        return arch_info
     
-    # Disk Information
-    report.append("\nDISK INFORMATION:")
-    report.append("-" * 40)
-    disk_info = get_disk_info()
-    report.append(f"Number of Partitions: {disk_info['Partitions']}")
-    for disk in disk_info['Details']:
-        report.append(f"\nDevice: {disk['Device']}")
-        report.append(f"  Mountpoint: {disk['Mountpoint']}")
-        report.append(f"  File System: {disk['File System']}")
-        report.append(f"  Total Size: {disk['Total Size']}")
-        report.append(f"  Used: {disk['Used']}")
-        report.append(f"  Free: {disk['Free']}")
-        report.append(f"  Usage: {disk['Usage']}")
+    def get_cpu_performance_metrics(self):
+        """Get CPU performance metrics"""
+        performance = {}
+        
+        # Measure CPU performance with a simple calculation
+        import time
+        start_time = time.time()
+        
+        # Simple CPU benchmark - calculate primes
+        def is_prime(n):
+            if n < 2:
+                return False
+            for i in range(2, int(n**0.5) + 1):
+                if n % i == 0:
+                    return False
+            return True
+        
+        # Count primes in a range (simple benchmark)
+        prime_count = 0
+        for i in range(2, 10000):
+            if is_prime(i):
+                prime_count += 1
+        
+        end_time = time.time()
+        
+        performance['prime_calculation_time'] = end_time - start_time
+        performance['primes_found'] = prime_count
+        
+        # Get load average
+        try:
+            load_avg = os.getloadavg()
+            performance['load_1min'] = load_avg[0]
+            performance['load_5min'] = load_avg[1]
+            performance['load_15min'] = load_avg[2]
+        except:
+            pass
+        
+        return performance
     
-    # Network Information
-    report.append("\nNETWORK INFORMATION:")
-    report.append("-" * 40)
-    network_info = get_network_info()
-    for key, value in network_info.items():
-        if key == 'Network Interfaces':
-            report.append(f"{key}: {', '.join(value)}")
-        else:
-            report.append(f"{key}: {value}")
+    def generate_comprehensive_report(self):
+        """Generate comprehensive CPU report"""
+        report = []
+        report.append("=" * 80)
+        report.append("🖥️ COMPREHENSIVE CPU INFORMATION REPORT")
+        report.append(f"📅 Generated at: {self.timestamp}")
+        report.append("=" * 80)
+        
+        # Basic Info
+        basic = self.cpu_info['basic_info']
+        report.append("\n🎯 BASIC CPU INFORMATION:")
+        report.append("-" * 50)
+        for key, value in basic.items():
+            report.append(f"  {key.replace('_', ' ').title()}: {value}")
+        
+        # Detailed Info
+        detailed = self.cpu_info['detailed_info']
+        report.append("\n⚡ DETAILED CPU INFORMATION:")
+        report.append("-" * 50)
+        report.append(f"  Physical Cores: {detailed['physical_cores']}")
+        report.append(f"  Logical Cores: {detailed['logical_cores']}")
+        report.append(f"  CPU Usage: {detailed['cpu_usage_percent']}%")
+        
+        # Frequency Information
+        freq = self.cpu_info['frequency_info']
+        report.append("\n📊 CPU FREQUENCY INFORMATION:")
+        report.append("-" * 50)
+        report.append(f"  Methods Used: {', '.join(freq['methods_used'])}")
+        
+        best = freq['best_estimate']
+        if best['current_mhz']:
+            report.append(f"  🎯 Best Current Frequency: {best['current_mhz']} MHz")
+        if best['max_mhz']:
+            report.append(f"  🎯 Best Max Frequency: {best['max_mhz']} MHz")
+        if best['min_mhz']:
+            report.append(f"  🎯 Best Min Frequency: {best['min_mhz']} MHz")
+        
+        # Show all frequency results
+        for method, data in freq['results'].items():
+            report.append(f"\n  📋 {method.upper()} Results:")
+            for key, value in data.items():
+                if 'mhz' in key and value:
+                    report.append(f"    {key}: {value} MHz")
+                elif key == 'model_name':
+                    report.append(f"    {key}: {value}")
+        
+        # Cache Information
+        cache = self.cpu_info['cache_info']
+        if cache:
+            report.append("\n💾 CPU CACHE INFORMATION:")
+            report.append("-" * 50)
+            for key, value in cache.items():
+                report.append(f"  {key.replace('_', ' ').title()}: {value}")
+        
+        # Flags Information
+        flags = self.cpu_info['flags_info']
+        if flags.get('flags'):
+            report.append("\n🚩 CPU FLAGS & FEATURES:")
+            report.append("-" * 50)
+            report.append(f"  Total Flags: {flags.get('flags_count', 0)}")
+            if flags.get('important_features'):
+                report.append(f"  Important Features: {', '.join(flags['important_features'])}")
+        
+        # Performance Metrics
+        perf = self.cpu_info['performance_info']
+        report.append("\n📈 CPU PERFORMANCE METRICS:")
+        report.append("-" * 50)
+        report.append(f"  Prime Calculation Time: {perf['prime_calculation_time']:.4f} seconds")
+        report.append(f"  Primes Found: {perf['primes_found']}")
+        if 'load_1min' in perf:
+            report.append(f"  Load Average (1min): {perf['load_1min']}")
+        
+        report.append("\n" + "=" * 80)
+        report.append("✅ Comprehensive CPU report completed successfully!")
+        
+        return "\n".join(report)
     
-    # GitHub Actions Information
-    report.append("\nGITHUB ACTIONS INFORMATION:")
-    report.append("-" * 40)
-    actions_info = get_github_actions_info()
-    for key, value in actions_info.items():
-        report.append(f"{key}: {value}")
-    
-    return "\n".join(report)
+    def save_reports(self):
+        """Save reports to files"""
+        # Text report
+        with open('cpu_detailed_report.txt', 'w') as f:
+            f.write(self.generate_comprehensive_report())
+        
+        # JSON report
+        with open('cpu_detailed_report.json', 'w') as f:
+            json.dump(self.cpu_info, f, indent=2, default=str)
+        
+        print("\n📁 Reports saved:")
+        print("  - cpu_detailed_report.txt")
+        print("  - cpu_detailed_report.json")
 
 def main():
-    """Main function"""
+    """Main execution function"""
     try:
-        print("Collecting hardware information...")
-        
-        # Generate the report
-        report = generate_report()
+        collector = CPUInfoCollector()
+        collector.collect_all_cpu_info()
         
         # Print to console
-        print(report)
+        print(collector.generate_comprehensive_report())
         
-        # Save to file
-        with open('hardware_report.txt', 'w') as f:
-            f.write(report)
-        
-        print(f"\nReport saved to: hardware_report.txt")
-        print("Hardware information collection completed successfully!")
+        # Save files
+        collector.save_reports()
         
     except Exception as e:
-        print(f"Error collecting hardware information: {e}")
-        sys.exit(1)
+        print(f"❌ Error collecting CPU information: {e}")
+        return 1
+    
+    return 0
 
 if __name__ == "__main__":
-    main()
+    exit(main())
