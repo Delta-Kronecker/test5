@@ -57,8 +57,8 @@ class CPUInfoCollector:
                 info['version'] = uname.version
                 info['machine'] = uname.machine
                 info['processor'] = uname.processor
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Could not get uname info: {e}")
             
         return info
     
@@ -85,8 +85,8 @@ class CPUInfoCollector:
                 'steal_time': getattr(times, 'steal', 0),
                 'guest_time': getattr(times, 'guest', 0)
             })
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Could not get CPU times: {e}")
         
         # CPU stats
         try:
@@ -95,10 +95,10 @@ class CPUInfoCollector:
                 'ctx_switches': stats.ctx_switches,
                 'interrupts': stats.interrupts,
                 'soft_interrupts': stats.soft_interrupts,
-                'syscalls': stats.syscalls
+                'syscalls': getattr(stats, 'syscalls', 0)
             })
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Could not get CPU stats: {e}")
             
         return info
     
@@ -171,7 +171,7 @@ class CPUInfoCollector:
                 frequency_info['results']['multiprocessing'] = mp_info
                 print(f"✅ multiprocessing method: {mp_info}")
         except Exception as e:
-            print(f"❌ multiprocessing method failed: {e")
+            print(f"❌ multiprocessing method failed: {e}")
         
         # Determine best available frequency values
         frequency_info['best_estimate'] = self._get_best_frequency_estimate(frequency_info['results'])
@@ -206,6 +206,7 @@ class CPUInfoCollector:
             return cpu_info if cpu_info else None
             
         except Exception as e:
+            print(f"⚠️ Error reading /proc/cpuinfo: {e}")
             return None
     
     def _get_lscpu_frequency(self):
@@ -237,7 +238,8 @@ class CPUInfoCollector:
                     cpu_info['model_name'] = model_match.group(1).strip()
                 
                 return cpu_info if cpu_info else None
-        except:
+        except Exception as e:
+            print(f"⚠️ lscpu command failed: {e}")
             return None
     
     def _get_cpufreq_info(self):
@@ -260,7 +262,8 @@ class CPUInfoCollector:
                     cpu_info['max_mhz'] = float(policy_match.group(2))
                 
                 return cpu_info if cpu_info else None
-        except:
+        except Exception as e:
+            print(f"⚠️ cpufreq-info command failed: {e}")
             return None
     
     def _get_dmidecode_cpu_info(self):
@@ -283,7 +286,8 @@ class CPUInfoCollector:
                     cpu_info['current_mhz'] = float(current_match.group(1))
                 
                 return cpu_info if cpu_info else None
-        except:
+        except Exception as e:
+            print(f"⚠️ dmidecode command failed: {e}")
             return None
     
     def _get_mp_cpu_info(self):
@@ -293,7 +297,8 @@ class CPUInfoCollector:
                 'cpu_count': multiprocessing.cpu_count()
             }
             return cpu_info
-        except:
+        except Exception as e:
+            print(f"⚠️ multiprocessing method failed: {e}")
             return None
     
     def _get_best_frequency_estimate(self, results):
@@ -306,11 +311,11 @@ class CPUInfoCollector:
         for method in methods_priority:
             if method in results:
                 data = results[method]
-                if best['current_mhz'] is None and 'current_mhz' in data:
+                if best['current_mhz'] is None and 'current_mhz' in data and data['current_mhz']:
                     best['current_mhz'] = data['current_mhz']
-                if best['max_mhz'] is None and 'max_mhz' in data:
+                if best['max_mhz'] is None and 'max_mhz' in data and data['max_mhz']:
                     best['max_mhz'] = data['max_mhz']
-                if best['min_mhz'] is None and 'min_mhz' in data:
+                if best['min_mhz'] is None and 'min_mhz' in data and data['min_mhz']:
                     best['min_mhz'] = data['min_mhz']
         
         return best
@@ -337,10 +342,10 @@ class CPUInfoCollector:
                             size = f.read().strip()
                         
                         cache_info[f'level_{level}_{cache_type}'] = size
-                    except:
-                        pass
-        except:
-            pass
+                    except Exception as e:
+                        print(f"⚠️ Could not read cache info for {cache_dir}: {e}")
+        except Exception as e:
+            print(f"⚠️ Could not get cache info: {e}")
         
         return cache_info
     
@@ -362,8 +367,8 @@ class CPUInfoCollector:
                 important_flags = ['avx', 'avx2', 'sse', 'sse2', 'sse3', 'sse4', 
                                  'aes', 'vmx', 'svm', 'hypervisor', 'tsc']
                 flags_info['important_features'] = [flag for flag in important_flags if flag in flags]
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Could not get CPU flags: {e}")
         
         return flags_info
     
@@ -375,16 +380,16 @@ class CPUInfoCollector:
             result = subprocess.run(['lscpu', '-p'], capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 topology['lscpu_topology'] = result.stdout.split('\n')[:10]  # First 10 lines
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Could not get CPU topology: {e}")
         
         # Get NUMA info if available
         try:
             result = subprocess.run(['numactl', '--hardware'], capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 topology['numa_info'] = result.stdout
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Could not get NUMA info: {e}")
         
         return topology
     
@@ -400,8 +405,8 @@ class CPUInfoCollector:
                     if ':' in line:
                         key, value = line.split(':', 1)
                         arch_info[key.strip()] = value.strip()
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Could not get architecture info: {e}")
         
         return arch_info
     
@@ -439,8 +444,8 @@ class CPUInfoCollector:
             performance['load_1min'] = load_avg[0]
             performance['load_5min'] = load_avg[1]
             performance['load_15min'] = load_avg[2]
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Could not get load average: {e}")
         
         return performance
     
@@ -475,18 +480,21 @@ class CPUInfoCollector:
         
         best = freq['best_estimate']
         if best['current_mhz']:
-            report.append(f"  🎯 Best Current Frequency: {best['current_mhz']} MHz")
+            report.append(f"  🎯 Best Current Frequency: {best['current_mhz']} MHz ({best['current_mhz']/1000:.2f} GHz)")
         if best['max_mhz']:
-            report.append(f"  🎯 Best Max Frequency: {best['max_mhz']} MHz")
+            report.append(f"  🎯 Best Max Frequency: {best['max_mhz']} MHz ({best['max_mhz']/1000:.2f} GHz)")
         if best['min_mhz']:
-            report.append(f"  🎯 Best Min Frequency: {best['min_mhz']} MHz")
+            report.append(f"  🎯 Best Min Frequency: {best['min_mhz']} MHz ({best['min_mhz']/1000:.2f} GHz)")
         
         # Show all frequency results
         for method, data in freq['results'].items():
             report.append(f"\n  📋 {method.upper()} Results:")
             for key, value in data.items():
-                if 'mhz' in key and value:
-                    report.append(f"    {key}: {value} MHz")
+                if 'mhz' in key and value and value != 'Unknown':
+                    if isinstance(value, (int, float)):
+                        report.append(f"    {key}: {value} MHz ({value/1000:.2f} GHz)")
+                    else:
+                        report.append(f"    {key}: {value}")
                 elif key == 'model_name':
                     report.append(f"    {key}: {value}")
         
@@ -514,7 +522,7 @@ class CPUInfoCollector:
         report.append(f"  Prime Calculation Time: {perf['prime_calculation_time']:.4f} seconds")
         report.append(f"  Primes Found: {perf['primes_found']}")
         if 'load_1min' in perf:
-            report.append(f"  Load Average (1min): {perf['load_1min']}")
+            report.append(f"  Load Average (1min): {perf['load_1min']:.2f}")
         
         report.append("\n" + "=" * 80)
         report.append("✅ Comprehensive CPU report completed successfully!")
